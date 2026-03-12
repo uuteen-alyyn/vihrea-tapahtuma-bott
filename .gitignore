@@ -1,0 +1,25 @@
+# Secrets — never commit
+.env
+
+# Database — contains encrypted API keys and audit logs, local only
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
