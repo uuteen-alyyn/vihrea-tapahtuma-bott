@@ -122,7 +122,7 @@ async def cmd_setup(
         f"✅ Botti konfiguoitu!\n"
         f"• Kanava: {channel.mention}\n"
         f"• Ylläpitorooli: {admin_role.mention}\n"
-        f"Lisää järjestäjät komennolla `/taxonomy add organiser \"Järjestäjän nimi\"`",
+        f"Muista asettaa API-avain komennolla `/setapikey`.",
         ephemeral=True,
     )
 
@@ -194,9 +194,11 @@ async def cmd_taxonomy(
     if action not in ("add", "remove"):
         await interaction.response.send_message("❌ Käytä `add` tai `remove`.", ephemeral=True)
         return
-    if term_type not in ("municipality", "event_type", "organiser"):
+    if term_type not in ("municipality", "event_type"):
         await interaction.response.send_message(
-            "❌ Tyyppi pitää olla `municipality`, `event_type` tai `organiser`.", ephemeral=True
+            "❌ Tyyppi pitää olla `municipality` tai `event_type`.\n"
+            "(Järjestäjät haetaan nyt suoraan API:sta — niitä ei enää hallita täällä.)",
+            ephemeral=True,
         )
         return
 
@@ -214,9 +216,11 @@ async def cmd_listtaxonomy(interaction: discord.Interaction, term_type: str):
     if not _is_admin(interaction):
         await interaction.response.send_message("❌ Ei oikeuksia.", ephemeral=True)
         return
-    if term_type not in ("municipality", "event_type", "organiser"):
+    if term_type not in ("municipality", "event_type"):
         await interaction.response.send_message(
-            "❌ Tyyppi pitää olla `municipality`, `event_type` tai `organiser`.", ephemeral=True
+            "❌ Tyyppi pitää olla `municipality` tai `event_type`.\n"
+            "(Järjestäjät haetaan nyt suoraan API:sta.)",
+            ephemeral=True,
         )
         return
     terms = db.get_taxonomy(term_type)
@@ -242,15 +246,13 @@ async def cmd_help(interaction: discord.Interaction):
         "• `/setapikey` — Aseta Tapahtumat API-avain (yksityinen lomake)\n"
         "• `/status` — Näytä botin nykyinen konfiguraatio\n\n"
         "**Taksonomienhallinta:**\n"
-        "• `/taxonomy add organiser \"Nimi\"` — Lisää järjestäjä listaan\n"
-        "• `/taxonomy remove organiser \"Nimi\"` — Poista järjestäjä listasta\n"
         "• `/taxonomy add municipality \"Kunta\"` — Lisää kunta listaan\n"
         "• `/taxonomy remove municipality \"Kunta\"` — Poista kunta listasta\n"
         "• `/taxonomy add event_type \"Tyyppi\"` — Lisää tapahtumatyyppi\n"
         "• `/taxonomy remove event_type \"Tyyppi\"` — Poista tapahtumatyyppi\n"
-        "• `/listtaxonomy organiser` — Listaa kaikki järjestäjät\n"
         "• `/listtaxonomy municipality` — Listaa kaikki kunnat\n"
-        "• `/listtaxonomy event_type` — Listaa kaikki tapahtumatyypit\n\n"
+        "• `/listtaxonomy event_type` — Listaa kaikki tapahtumatyypit\n"
+        "*(Järjestäjät haetaan automaattisesti API:sta — niitä ei enää hallita käsin.)*\n\n"
         "**Tapahtumailmoitus:**\n"
         "Kirjoita mikä tahansa viesti konfiguroidulle kanavalle, niin botti avaa yksityisen "
         "ketjun ja ohjaa sinut läpi tapahtuman tietojen täyttämisen.",

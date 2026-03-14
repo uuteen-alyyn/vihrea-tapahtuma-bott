@@ -8,7 +8,15 @@ from dataclasses import dataclass, field
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import logging
+log = logging.getLogger(__name__)
+
 FINLAND_TZ = ZoneInfo("Europe/Helsinki")
+# The API strips timezone offsets and treats times as UTC, then the website
+# always displays in UTC+3 (EEST). To get the correct display, we convert
+# user input from EEST (UTC+3) to UTC, effectively using summer time year-round.
+from datetime import timezone as _timezone, timedelta as _timedelta
+_EEST = _timezone(_timedelta(hours=3))
 
 # Fields shown to users in Finnish
 FIELD_LABELS: dict[str, str] = {
@@ -41,7 +49,9 @@ class EventData:
     place_name: str = ""
     street_address: str = ""
     municipality: str = ""
-    organiser: str = ""
+    organiser: str = ""        # display name (set alongside organiser_id)
+    organiser_id: Optional[int] = None  # API node ID — used in the payload
+    place_id: Optional[int] = None      # API node ID — set when place selected from search
     event_type: str = ""
     remote: bool = False
     invite_link: str = ""      # optional link for remote events
@@ -68,21 +78,31 @@ class EventData:
 
 
 def _to_iso8601(date: str, time: str) -> str:
-    """Combine YYYY-MM-DD + HH:MM into ISO 8601 with Finnish timezone offset."""
+    """
+    Combine YYYY-MM-DD + HH:MM into an ISO 8601 UTC string.
+
+    The API ignores the timezone offset and treats the raw time as UTC, then the
+    website always displays in UTC+3 (EEST). We therefore treat user input as EEST
+    (UTC+3) year-round and convert to UTC before sending, so that the displayed
+    time matches what the user entered.
+    """
     from datetime import datetime
     dt = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
-    dt_aware = dt.replace(tzinfo=FINLAND_TZ)
-    return dt_aware.isoformat(timespec="seconds")  # e.g. 2024-06-15T14:00:00+03:00
+    dt_eest = dt.replace(tzinfo=_EEST)
+    dt_utc = dt_eest.astimezone(_timezone(_timedelta(hours=0)))
+    return dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def build_payload(data: EventData) -> dict:
     payload: dict = {
-        "title":       data.title,
-        "start":       _to_iso8601(data.start_date, data.start_time),
-        "organiser":   data.organiser,
-        "place_name":  data.place_name,
-        "municipality": data.municipality,
+        "title":        data.title,
+        "start":        _to_iso8601(data.start_date, data.start_time),
+        "organiser_id": data.organiser_id,
+        "place_name":   data.place_name,
+        "municipality":  data.municipality,
     }
+    if data.place_id is not None:
+        payload["place_id"] = data.place_id
     if data.end_time:
         payload["end"] = _to_iso8601(data.start_date, data.end_time)
     if data.description:
@@ -100,6 +120,90 @@ def build_payload(data: EventData) -> dict:
         link_line = f"Tapahtumalinkki: {data.invite_link}"
         payload["description"] = f"{desc}\n\n{link_line}".strip() if desc else link_line
     return payload
+
+
+class OrganiserSearchError(Exception):
+    """Raised when the organiser search API call fails (network error or non-200 response)."""
+
+
+async def search_organisers(api_base_url: str, api_key: str, query: str) -> list[dict]:
+    """
+    Search for organisers by name via the API.
+    Returns a list of {"id": int, "name": str} dicts, empty list when the API
+    returned 200 but found nothing.
+    Raises OrganiserSearchError on network errors or non-200 HTTP responses.
+    """
+    url = f"{api_base_url.rstrip('/')}/api/v1/organisers/search"
+    headers = {"api-key": api_key}
+    params = {"name": query}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, headers=headers, params=params,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    log.warning("organiser search returned HTTP %s: %s", resp.status, body[:200])
+                    raise OrganiserSearchError(f"HTTP {resp.status}")
+                data = await resp.json(content_type=None)
+                # Normalise: the API may return a plain list or a wrapped object
+                items = data if isinstance(data, list) else data.get("results", data.get("organisers", data.get("data", [])))
+                results = []
+                for item in items:
+                    org_id   = item.get("id") or item.get("nid")
+                    org_name = item.get("name") or item.get("title") or item.get("label", "")
+                    if org_id and org_name:
+                        results.append({"id": int(org_id), "name": str(org_name)})
+                return results
+    except OrganiserSearchError:
+        raise
+    except Exception as exc:
+        log.warning("organiser search failed: %s", exc)
+        raise OrganiserSearchError(str(exc)) from exc
+
+
+class PlaceSearchError(Exception):
+    """Raised when the place search API call fails (network error or non-200 response)."""
+
+
+async def search_places(api_base_url: str, api_key: str, query: str) -> list[dict]:
+    """
+    Search for places by name via the API.
+    Returns a list of {"id", "name", "municipality", "street_address"} dicts, empty list when
+    the API returned 200 but found nothing.
+    Raises PlaceSearchError on network errors or non-200 HTTP responses.
+    """
+    url = f"{api_base_url.rstrip('/')}/api/v1/places/search"
+    headers = {"api-key": api_key}
+    params = {"q": query}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, headers=headers, params=params,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    log.warning("place search returned HTTP %s: %s", resp.status, body[:200])
+                    raise PlaceSearchError(f"HTTP {resp.status}")
+                data = await resp.json(content_type=None)
+                items = data if isinstance(data, list) else data.get("results", data.get("data", []))
+                return [
+                    {
+                        "id": item.get("id"),
+                        "name": item.get("name", ""),
+                        "municipality": item.get("municipality", ""),
+                        "street_address": item.get("street_address", ""),
+                    }
+                    for item in items
+                    if item.get("name")
+                ]
+    except PlaceSearchError:
+        raise
+    except Exception as exc:
+        log.warning("place search failed: %s", exc)
+        raise PlaceSearchError(str(exc)) from exc
 
 
 @dataclass
