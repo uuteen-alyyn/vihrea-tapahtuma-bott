@@ -1,0 +1,28 @@
+apiVersion: 2021-10-01
+location: northeurope
+name: tapahtumabot
+properties:
+  imageRegistryCredentials:
+    - server: <acrname>.azurecr.io
+      username: <acrname>
+      password: <acr-password>
+  containers:
+    - name: bot
+      properties:
+        image: <acrname>.azurecr.io/tapahtumabot:latest
+        resources:
+          requests:
+            cpu: 0.5
+            memoryInGb: 0.5
+        environmentVariables:
+          - name: DISCORD_BOT_TOKEN
+            secureValue: "<your-discord-token>"
+          - name: ENCRYPTION_KEY
+            secureValue: "<your-encryption-key>"
+          - name: DATABASE_URL
+            secureValue: "mysql+pymysql://<user>:<pass>@<host>/<dbname>?charset=utf8mb4"
+          - name: API_BASE_URL
+            value: "https://tapahtumat.vihreaturku.fi"
+  osType: Linux
+  restartPolicy: Always
+type: Microsoft.ContainerInstance/containerGroups

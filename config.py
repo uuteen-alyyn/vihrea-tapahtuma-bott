@@ -22,7 +22,7 @@ class Config:
     smtp_password: str
     smtp_from: str
 
-    database_path: str
+    database_url: str
     rate_limit_max: int
     rate_limit_window: int
     encryption_key: bytes
@@ -55,7 +55,7 @@ def load_config() -> Config:
         smtp_password=os.environ.get("SMTP_PASSWORD", ""),
         smtp_from=os.environ.get("SMTP_FROM", ""),
 
-        database_path=os.environ.get("DATABASE_PATH", "audit.db"),
+        database_url=os.environ.get("DATABASE_URL", "sqlite:///audit.db"),
         rate_limit_max=int(os.environ.get("RATE_LIMIT_MAX", "10")),
         rate_limit_window=int(os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "3600")),
         encryption_key=enc_key.encode(),

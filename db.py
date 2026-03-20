@@ -1,19 +1,63 @@
 """
-SQLite layer: schema, guild config, audit log, rate limiting, taxonomy cache,
+SQLAlchemy layer: schema, guild config, audit log, rate limiting, taxonomy cache,
 and pending email submissions.
 """
 import json
-import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from cryptography.fernet import Fernet
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, DateTime
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-# Defaults — overwritten by init_db()
-_db_path = "audit.db"
-_fernet: Fernet = None
+Base = declarative_base()
+
+class GuildConfig(Base):
+    __tablename__ = 'guild_config'
+    guild_id = Column(BigInteger, primary_key=True)
+    submission_channel_id = Column(BigInteger, nullable=True)
+    admin_role_id = Column(BigInteger, nullable=True)
+    default_organiser = Column(String(255), default='')
+    api_key_encrypted = Column(Text, default='')
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+class AuditLog(Base):
+    __tablename__ = 'audit_log'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    channel = Column(String(255), nullable=False)
+    guild_id = Column(BigInteger, nullable=True)
+    user_id = Column(String(255), nullable=True)
+    action = Column(String(255), nullable=False)
+    details = Column(Text, nullable=True)
+    submission_id = Column(String(255), nullable=True)
+
+class PendingEmailSubmission(Base):
+    __tablename__ = 'pending_email_submissions'
+    id = Column(String(255), primary_key=True)
+    email_from = Column(String(255), nullable=False)
+    email_subject = Column(String(255), nullable=True)
+    received_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    event_data = Column(Text, nullable=False)
+    status = Column(String(50), default='pending')
+    reply_count = Column(Integer, default=0)
+    guild_id = Column(BigInteger, nullable=True)
+
+class RateLimitLog(Base):
+    __tablename__ = 'rate_limit_log'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(255), nullable=False)
+    guild_id = Column(BigInteger, nullable=False)
+    submitted_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+class TaxonomyCache(Base):
+    __tablename__ = 'taxonomy_cache'
+    term_type = Column(String(255), primary_key=True)
+    term_value = Column(String(255), primary_key=True)
 
 # ---------------------------------------------------------------------------
 # Default taxonomy values (no API endpoint exists; admin can update via /taxonomy)
@@ -61,8 +105,9 @@ DEFAULT_MUNICIPALITIES = [
     "Lahti", "Hämeenlinna", "Kouvola", "Kotka", "Lappeenranta",
     "Imatra", "Mikkeli", "Savonlinna", "Joensuu", "Kuopio", "Pori",
     "Rauma", "Vaasa", "Seinäjoki", "Kokkola", "Rovaniemi", "Kemi",
-    "Tornio", "Kajaani", "Joensuu",
+    "Tornio", "Kajaani"
 ]
+
 DEFAULT_EVENT_TYPES = [
     "Juhla", "Keskustelutilaisuus", "Kokous",
     "Koulutus", "Seminaari", "Toritapahtuma",
@@ -73,98 +118,55 @@ DEFAULT_EVENT_TYPES = [
 # Init
 # ---------------------------------------------------------------------------
 
-def init_db(path: str, encryption_key: bytes) -> None:
-    global _db_path, _fernet
-    _db_path = path
+_engine = None
+_SessionFactory = None
+_fernet: Fernet = None
+
+def init_db(database_url: str, encryption_key: bytes) -> None:
+    global _engine, _SessionFactory, _fernet
+    if database_url.startswith("sqlite"):
+        _engine = create_engine(database_url, connect_args={"check_same_thread": False})
+    else:
+        _engine = create_engine(database_url, pool_pre_ping=True, pool_recycle=3600)
+
+    _SessionFactory = sessionmaker(bind=_engine)
     _fernet = Fernet(encryption_key)
-    _create_tables()
+    
+    Base.metadata.create_all(_engine)
     _seed_taxonomy()
 
 
 @contextmanager
-def _conn():
-    con = sqlite3.connect(_db_path)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
+def get_session():
+    session = _SessionFactory()
     try:
-        yield con
-        con.commit()
+        yield session
+        session.commit()
     except Exception:
-        con.rollback()
+        session.rollback()
         raise
     finally:
-        con.close()
-
-
-def _create_tables() -> None:
-    with _conn() as con:
-        con.executescript("""
-            CREATE TABLE IF NOT EXISTS guild_config (
-                guild_id        INTEGER PRIMARY KEY,
-                submission_channel_id INTEGER,
-                admin_role_id   INTEGER,
-                default_organiser TEXT DEFAULT '',
-                api_key_encrypted TEXT DEFAULT '',
-                created_at      TEXT DEFAULT (datetime('now')),
-                updated_at      TEXT DEFAULT (datetime('now'))
-            );
-
-            CREATE TABLE IF NOT EXISTS audit_log (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp       TEXT DEFAULT (datetime('now')),
-                channel         TEXT NOT NULL,
-                guild_id        INTEGER,
-                user_id         TEXT,
-                action          TEXT NOT NULL,
-                details         TEXT,
-                submission_id   TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS pending_email_submissions (
-                id              TEXT PRIMARY KEY,
-                email_from      TEXT NOT NULL,
-                email_subject   TEXT,
-                received_at     TEXT NOT NULL,
-                expires_at      TEXT NOT NULL,
-                event_data      TEXT NOT NULL,
-                status          TEXT DEFAULT 'pending',
-                reply_count     INTEGER DEFAULT 0,
-                guild_id        INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS rate_limit_log (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id         TEXT NOT NULL,
-                guild_id        INTEGER NOT NULL,
-                submitted_at    TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS taxonomy_cache (
-                term_type       TEXT NOT NULL,
-                term_value      TEXT NOT NULL,
-                PRIMARY KEY (term_type, term_value)
-            );
-        """)
+        session.close()
 
 
 def _seed_taxonomy() -> None:
     """Replace municipality and event_type defaults. Never touches organiser entries."""
-    with _conn() as con:
-        con.execute("DELETE FROM taxonomy_cache WHERE term_type = 'municipality'")
-        con.execute("DELETE FROM taxonomy_cache WHERE term_type = 'event_type'")
+    with get_session() as session:
+        session.query(TaxonomyCache).filter(TaxonomyCache.term_type.in_(['municipality', 'event_type'])).delete(synchronize_session=False)
+        
         # Deduplicate before inserting
-        seen: set = set()
-        rows = []
+        seen = set()
+        objects = []
         for m in DEFAULT_MUNICIPALITIES:
             if m not in seen:
                 seen.add(m)
-                rows.append(("municipality", m))
+                objects.append(TaxonomyCache(term_type='municipality', term_value=m))
         for et in DEFAULT_EVENT_TYPES:
-            rows.append(("event_type", et))
-        con.executemany(
-            "INSERT OR IGNORE INTO taxonomy_cache (term_type, term_value) VALUES (?, ?)",
-            rows,
-        )
+            objects.append(TaxonomyCache(term_type='event_type', term_value=et))
+        
+        # Merge objects to avoid integrity errors on duplicate inserts if they somehow exist
+        for obj in objects:
+            session.merge(obj)
 
 
 # ---------------------------------------------------------------------------
@@ -172,12 +174,17 @@ def _seed_taxonomy() -> None:
 # ---------------------------------------------------------------------------
 
 def get_guild_config(guild_id: int) -> Optional[dict]:
-    with _conn() as con:
-        row = con.execute(
-            "SELECT * FROM guild_config WHERE guild_id = ?", (guild_id,)
-        ).fetchone()
-        return dict(row) if row else None
-
+    with get_session() as session:
+        record = session.query(GuildConfig).filter_by(guild_id=guild_id).first()
+        if not record:
+            return None
+        return {
+            "guild_id": record.guild_id,
+            "submission_channel_id": record.submission_channel_id,
+            "admin_role_id": record.admin_role_id,
+            "default_organiser": record.default_organiser,
+            "api_key_encrypted": record.api_key_encrypted,
+        }
 
 def upsert_guild_config(
     guild_id: int,
@@ -185,58 +192,40 @@ def upsert_guild_config(
     admin_role_id: Optional[int] = None,
     default_organiser: Optional[str] = None,
 ) -> None:
-    with _conn() as con:
-        existing = con.execute(
-            "SELECT guild_id FROM guild_config WHERE guild_id = ?", (guild_id,)
-        ).fetchone()
-        if existing:
-            updates = []
-            params = []
-            if submission_channel_id is not None:
-                updates.append("submission_channel_id = ?")
-                params.append(submission_channel_id)
-            if admin_role_id is not None:
-                updates.append("admin_role_id = ?")
-                params.append(admin_role_id)
-            if default_organiser is not None:
-                updates.append("default_organiser = ?")
-                params.append(default_organiser)
-            updates.append("updated_at = datetime('now')")
-            params.append(guild_id)
-            con.execute(
-                f"UPDATE guild_config SET {', '.join(updates)} WHERE guild_id = ?",
-                params,
+    with get_session() as session:
+        record = session.query(GuildConfig).filter_by(guild_id=guild_id).first()
+        if not record:
+            record = GuildConfig(
+                guild_id=guild_id,
+                submission_channel_id=submission_channel_id,
+                admin_role_id=admin_role_id,
+                default_organiser=default_organiser or ''
             )
+            session.add(record)
         else:
-            con.execute(
-                """INSERT INTO guild_config
-                   (guild_id, submission_channel_id, admin_role_id, default_organiser)
-                   VALUES (?, ?, ?, ?)""",
-                (guild_id, submission_channel_id, admin_role_id, default_organiser or ""),
-            )
-
+            if submission_channel_id is not None:
+                record.submission_channel_id = submission_channel_id
+            if admin_role_id is not None:
+                record.admin_role_id = admin_role_id
+            if default_organiser is not None:
+                record.default_organiser = default_organiser
 
 def set_api_key(guild_id: int, api_key: str) -> None:
     encrypted = _fernet.encrypt(api_key.encode()).decode()
-    with _conn() as con:
-        con.execute(
-            """INSERT INTO guild_config (guild_id, api_key_encrypted)
-               VALUES (?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET
-                   api_key_encrypted = excluded.api_key_encrypted,
-                   updated_at = datetime('now')""",
-            (guild_id, encrypted),
-        )
-
+    with get_session() as session:
+        record = session.query(GuildConfig).filter_by(guild_id=guild_id).first()
+        if not record:
+            record = GuildConfig(guild_id=guild_id, api_key_encrypted=encrypted)
+            session.add(record)
+        else:
+            record.api_key_encrypted = encrypted
 
 def get_api_key(guild_id: int) -> Optional[str]:
-    with _conn() as con:
-        row = con.execute(
-            "SELECT api_key_encrypted FROM guild_config WHERE guild_id = ?", (guild_id,)
-        ).fetchone()
-        if not row or not row["api_key_encrypted"]:
+    with get_session() as session:
+        record = session.query(GuildConfig).filter_by(guild_id=guild_id).first()
+        if not record or not record.api_key_encrypted:
             return None
-        return _fernet.decrypt(row["api_key_encrypted"].encode()).decode()
+        return _fernet.decrypt(record.api_key_encrypted.encode()).decode()
 
 
 # ---------------------------------------------------------------------------
@@ -251,19 +240,16 @@ def audit(
     details: Optional[dict] = None,
     submission_id: Optional[str] = None,
 ) -> None:
-    with _conn() as con:
-        con.execute(
-            """INSERT INTO audit_log (channel, guild_id, user_id, action, details, submission_id)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                channel,
-                guild_id,
-                user_id,
-                action,
-                json.dumps(details, ensure_ascii=False) if details else None,
-                submission_id,
-            ),
+    with get_session() as session:
+        log = AuditLog(
+            channel=channel,
+            guild_id=guild_id,
+            user_id=user_id,
+            action=action,
+            details=json.dumps(details, ensure_ascii=False) if details else None,
+            submission_id=submission_id,
         )
+        session.add(log)
 
 
 # ---------------------------------------------------------------------------
@@ -272,24 +258,19 @@ def audit(
 
 def check_rate_limit(user_id: str, guild_id: int, max_count: int, window_seconds: int) -> bool:
     """Return True if the user is within the rate limit (allowed to submit)."""
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
-    ).strftime("%Y-%m-%d %H:%M:%S")
-    with _conn() as con:
-        count = con.execute(
-            """SELECT COUNT(*) FROM rate_limit_log
-               WHERE user_id = ? AND guild_id = ? AND submitted_at > ?""",
-            (user_id, guild_id, cutoff),
-        ).fetchone()[0]
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
+    with get_session() as session:
+        count = session.query(RateLimitLog).filter(
+            RateLimitLog.user_id == user_id,
+            RateLimitLog.guild_id == guild_id,
+            RateLimitLog.submitted_at > cutoff
+        ).count()
     return count < max_count
 
-
 def record_submission(user_id: str, guild_id: int) -> None:
-    with _conn() as con:
-        con.execute(
-            "INSERT INTO rate_limit_log (user_id, guild_id, submitted_at) VALUES (?, ?, datetime('now'))",
-            (user_id, guild_id),
-        )
+    with get_session() as session:
+        log = RateLimitLog(user_id=user_id, guild_id=guild_id)
+        session.add(log)
 
 
 # ---------------------------------------------------------------------------
@@ -297,28 +278,19 @@ def record_submission(user_id: str, guild_id: int) -> None:
 # ---------------------------------------------------------------------------
 
 def get_taxonomy(term_type: str) -> list[str]:
-    with _conn() as con:
-        rows = con.execute(
-            "SELECT term_value FROM taxonomy_cache WHERE term_type = ? ORDER BY term_value",
-            (term_type,),
-        ).fetchall()
-        return [r["term_value"] for r in rows]
-
+    with get_session() as session:
+        records = session.query(TaxonomyCache).filter_by(term_type=term_type).order_by(TaxonomyCache.term_value).all()
+        return [r.term_value for r in records]
 
 def add_taxonomy_term(term_type: str, term_value: str) -> None:
-    with _conn() as con:
-        con.execute(
-            "INSERT OR IGNORE INTO taxonomy_cache (term_type, term_value) VALUES (?, ?)",
-            (term_type, term_value),
-        )
-
+    with get_session() as session:
+        record = session.query(TaxonomyCache).filter_by(term_type=term_type, term_value=term_value).first()
+        if not record:
+            session.add(TaxonomyCache(term_type=term_type, term_value=term_value))
 
 def remove_taxonomy_term(term_type: str, term_value: str) -> None:
-    with _conn() as con:
-        con.execute(
-            "DELETE FROM taxonomy_cache WHERE term_type = ? AND term_value = ?",
-            (term_type, term_value),
-        )
+    with get_session() as session:
+        session.query(TaxonomyCache).filter_by(term_type=term_type, term_value=term_value).delete()
 
 
 # ---------------------------------------------------------------------------
@@ -335,69 +307,73 @@ def create_pending_email(
     sub_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     expires = now + timedelta(seconds=confirmation_window_seconds)
-    with _conn() as con:
-        con.execute(
-            """INSERT INTO pending_email_submissions
-               (id, email_from, email_subject, received_at, expires_at, event_data, guild_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                sub_id,
-                email_from,
-                email_subject,
-                now.strftime("%Y-%m-%d %H:%M:%S"),
-                expires.strftime("%Y-%m-%d %H:%M:%S"),
-                json.dumps(event_data, ensure_ascii=False),
-                guild_id,
-            ),
+    with get_session() as session:
+        pending = PendingEmailSubmission(
+            id=sub_id,
+            email_from=email_from,
+            email_subject=email_subject,
+            received_at=now,
+            expires_at=expires,
+            event_data=json.dumps(event_data, ensure_ascii=False),
+            guild_id=guild_id,
         )
+        session.add(pending)
     return sub_id
-
 
 def get_pending_by_email(email_from: str) -> Optional[dict]:
     """Return the most recent pending submission for an email address."""
-    with _conn() as con:
-        row = con.execute(
-            """SELECT * FROM pending_email_submissions
-               WHERE email_from = ? AND status = 'pending'
-               ORDER BY received_at DESC LIMIT 1""",
-            (email_from,),
-        ).fetchone()
-        if not row:
+    with get_session() as session:
+        record = session.query(PendingEmailSubmission).filter_by(
+            email_from=email_from, status='pending'
+        ).order_by(PendingEmailSubmission.received_at.desc()).first()
+        
+        if not record:
             return None
-        d = dict(row)
-        d["event_data"] = json.loads(d["event_data"])
-        return d
-
+            
+        return {
+            "id": record.id,
+            "email_from": record.email_from,
+            "email_subject": record.email_subject,
+            "received_at": record.received_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "expires_at": record.expires_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "event_data": json.loads(record.event_data),
+            "status": record.status,
+            "reply_count": record.reply_count,
+            "guild_id": record.guild_id,
+        }
 
 def update_pending_email(sub_id: str, event_data: dict, reply_count: int) -> None:
-    with _conn() as con:
-        con.execute(
-            """UPDATE pending_email_submissions
-               SET event_data = ?, reply_count = ?
-               WHERE id = ?""",
-            (json.dumps(event_data, ensure_ascii=False), reply_count, sub_id),
-        )
-
+    with get_session() as session:
+        record = session.query(PendingEmailSubmission).filter_by(id=sub_id).first()
+        if record:
+            record.event_data = json.dumps(event_data, ensure_ascii=False)
+            record.reply_count = reply_count
 
 def close_pending_email(sub_id: str, status: str) -> None:
-    with _conn() as con:
-        con.execute(
-            "UPDATE pending_email_submissions SET status = ? WHERE id = ?",
-            (status, sub_id),
-        )
-
+    with get_session() as session:
+        record = session.query(PendingEmailSubmission).filter_by(id=sub_id).first()
+        if record:
+            record.status = status
 
 def get_expired_pending_emails() -> list[dict]:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    with _conn() as con:
-        rows = con.execute(
-            """SELECT * FROM pending_email_submissions
-               WHERE status = 'pending' AND expires_at <= ?""",
-            (now,),
-        ).fetchall()
+    now = datetime.now(timezone.utc)
+    with get_session() as session:
+        records = session.query(PendingEmailSubmission).filter(
+            PendingEmailSubmission.status == 'pending',
+            PendingEmailSubmission.expires_at <= now
+        ).all()
+        
         result = []
-        for row in rows:
-            d = dict(row)
-            d["event_data"] = json.loads(d["event_data"])
-            result.append(d)
+        for record in records:
+            result.append({
+                "id": record.id,
+                "email_from": record.email_from,
+                "email_subject": record.email_subject,
+                "received_at": record.received_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "expires_at": record.expires_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "event_data": json.loads(record.event_data),
+                "status": record.status,
+                "reply_count": record.reply_count,
+                "guild_id": record.guild_id,
+            })
         return result

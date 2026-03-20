@@ -40,7 +40,7 @@ ORGANISERS = [
 ]
 
 cfg = load_config()
-db.init_db(cfg.database_path, cfg.encryption_key)
+db.init_db(cfg.database_url, cfg.encryption_key)
 
 for org in ORGANISERS:
     db.add_taxonomy_term("organiser", org)

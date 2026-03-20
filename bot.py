@@ -33,7 +33,7 @@ cfg = load_config()
 
 @bot.event
 async def on_ready():
-    db.init_db(cfg.database_path, cfg.encryption_key)
+    db.init_db(cfg.database_url, cfg.encryption_key)
     print(f"[bot] Logged in as {bot.user} (id={bot.user.id})")
 
     try:
