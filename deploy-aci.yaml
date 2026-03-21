@@ -1,15 +1,11 @@
 apiVersion: 2021-10-01
-location: northeurope
+location: swedencentral
 name: tapahtumabot
 properties:
-  imageRegistryCredentials:
-    - server: <acrname>.azurecr.io
-      username: <acrname>
-      password: <acr-password>
   containers:
     - name: bot
       properties:
-        image: <acrname>.azurecr.io/tapahtumabot:latest
+        image: ghcr.io/uuteen-alyyn/vihrea-tapahtuma-bott
         resources:
           requests:
             cpu: 0.5
@@ -23,6 +19,8 @@ properties:
             secureValue: "mysql+pymysql://<user>:<pass>@<host>/<dbname>?charset=utf8mb4"
           - name: API_BASE_URL
             value: "https://tapahtumat.vihreaturku.fi"
+  subnetIds:
+    - id: /subscriptions/c9700cd7-d401-4254-80fe-02e15c6abe3f/resourceGroups/Vihrea-tapahtumakalenteri/providers/Microsoft.Network/virtualNetworks/koijarvi-vnet/subnets/discord-bot
   osType: Linux
   restartPolicy: Always
 type: Microsoft.ContainerInstance/containerGroups
