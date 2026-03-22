@@ -87,6 +87,20 @@ async def on_message(message: discord.Message):
 # Admin slash commands
 # ---------------------------------------------------------------------------
 
+# NOTE: @app_commands.default_permissions sets the *default* permission shown in
+# the Discord client, but server admins can override these via Server Settings →
+# Integrations for any role or user.  We therefore also check permissions at
+# runtime inside every handler so that the enforcement cannot be bypassed by a
+# server-side integration override.
+
+def _has_admin_permission(interaction: discord.Interaction) -> bool:
+    """Return True if the invoking member has the Manage Guild permission."""
+    member = interaction.user
+    if not isinstance(member, discord.Member):
+        return False
+    return member.guild_permissions.manage_guild
+
+
 @bot.tree.command(name="setup", description="Konfiguroi botti tälle palvelimelle")
 @app_commands.describe(
     channel="Kanava, jossa tapahtumailmoitukset tehdään",
@@ -96,6 +110,9 @@ async def cmd_setup(
     interaction: discord.Interaction,
     channel: discord.TextChannel,
 ):
+    if not _has_admin_permission(interaction):
+        await interaction.response.send_message("❌ Tarvitset Palvelimen hallinta -oikeuden.", ephemeral=True)
+        return
     db.upsert_guild_config(
         guild_id=interaction.guild_id,
         submission_channel_id=channel.id,
@@ -124,12 +141,18 @@ class ApiKeyModal(discord.ui.Modal, title="Aseta API-avain"):
 @bot.tree.command(name="setapikey", description="Aseta Tapahtumat API-avain tälle palvelimelle")
 @app_commands.default_permissions(manage_guild=True)
 async def cmd_setapikey(interaction: discord.Interaction):
+    if not _has_admin_permission(interaction):
+        await interaction.response.send_message("❌ Tarvitset Palvelimen hallinta -oikeuden.", ephemeral=True)
+        return
     await interaction.response.send_modal(ApiKeyModal())
 
 
 @bot.tree.command(name="status", description="Näytä botin nykyinen konfiguraatio")
 @app_commands.default_permissions(manage_guild=True)
 async def cmd_status(interaction: discord.Interaction):
+    if not _has_admin_permission(interaction):
+        await interaction.response.send_message("❌ Tarvitset Palvelimen hallinta -oikeuden.", ephemeral=True)
+        return
     cfg_data = db.get_guild_config(interaction.guild_id)
     if not cfg_data:
         await interaction.response.send_message(
@@ -163,6 +186,9 @@ async def cmd_taxonomy(
     term_type: str,
     value: str,
 ):
+    if not _has_admin_permission(interaction):
+        await interaction.response.send_message("❌ Tarvitset Palvelimen hallinta -oikeuden.", ephemeral=True)
+        return
     if action not in ("add", "remove"):
         await interaction.response.send_message("❌ Käytä `add` tai `remove`.", ephemeral=True)
         return
@@ -186,6 +212,9 @@ async def cmd_taxonomy(
 @app_commands.describe(term_type="municipality tai event_type")
 @app_commands.default_permissions(manage_guild=True)
 async def cmd_listtaxonomy(interaction: discord.Interaction, term_type: str):
+    if not _has_admin_permission(interaction):
+        await interaction.response.send_message("❌ Tarvitset Palvelimen hallinta -oikeuden.", ephemeral=True)
+        return
     if term_type not in ("municipality", "event_type"):
         await interaction.response.send_message(
             "❌ Tyyppi pitää olla `municipality` tai `event_type`.\n"
