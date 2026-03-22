@@ -13,10 +13,9 @@ log = logging.getLogger(__name__)
 
 FINLAND_TZ = ZoneInfo("Europe/Helsinki")
 # The API strips timezone offsets and treats times as UTC, then the website
-# always displays in UTC+3 (EEST). To get the correct display, we convert
-# user input from EEST (UTC+3) to UTC, effectively using summer time year-round.
+# displays the time in Finnish local time (Europe/Helsinki). We therefore
+# attach the Europe/Helsinki timezone so that winter/summer times are handled correctly.
 from datetime import timezone as _timezone, timedelta as _timedelta
-_EEST = _timezone(_timedelta(hours=3))
 
 # Fields shown to users in Finnish
 FIELD_LABELS: dict[str, str] = {
@@ -81,15 +80,14 @@ def _to_iso8601(date: str, time: str) -> str:
     """
     Combine YYYY-MM-DD + HH:MM into an ISO 8601 UTC string.
 
-    The API ignores the timezone offset and treats the raw time as UTC, then the
-    website always displays in UTC+3 (EEST). We therefore treat user input as EEST
-    (UTC+3) year-round and convert to UTC before sending, so that the displayed
-    time matches what the user entered.
+    We treat user input as Finnish local time (Europe/Helsinki) and convert to UTC
+    before sending, so that the displayed time matches what the user entered,
+    accounting for both winter (UTC+2) and summer (UTC+3) times correctly.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
     dt = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
-    dt_eest = dt.replace(tzinfo=_EEST)
-    dt_utc = dt_eest.astimezone(_timezone(_timedelta(hours=0)))
+    dt_helsinki = dt.replace(tzinfo=FINLAND_TZ)
+    dt_utc = dt_helsinki.astimezone(timezone.utc)
     return dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
