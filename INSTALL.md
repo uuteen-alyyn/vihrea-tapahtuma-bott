@@ -127,12 +127,12 @@ To prevent the bot from seeing all channels on your server:
 
 Run these slash commands in any channel on your server:
 
-**1. Set up the submission channel and admin role:**
+**1. Set up the submission channel:**
 ```
-/setup channel:#your-channel role:@your-admin-role
+/setup channel:#your-channel
 ```
 - `channel` = the channel where members will post events
-- `role` = your admin/moderator role (server owner can always run admin commands regardless)
+*Note: You must have the "Manage Server" Discord permission to run this and other admin commands.*
 
 **2. Set the Tapahtumat API key (opens a private popup — key is never visible in chat):**
 ```
@@ -158,7 +158,7 @@ The bot should immediately open a private thread and start the Q&A flow in Finni
 
 | Command | What it does |
 |---------|--------------|
-| `/setup` | Change the submission channel or admin role |
+| `/setup` | Change the submission channel |
 | `/setapikey` | Update the API key |
 | `/status` | Show current configuration |
 | `/taxonomy add organiser "Name"` | Add an organisation to the list |

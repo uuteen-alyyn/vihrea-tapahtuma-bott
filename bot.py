@@ -87,41 +87,22 @@ async def on_message(message: discord.Message):
 # Admin slash commands
 # ---------------------------------------------------------------------------
 
-def _is_admin(interaction: discord.Interaction) -> bool:
-    """Returns True if the user has the configured admin role (or is guild owner)."""
-    if interaction.user.id == interaction.guild.owner_id:
-        return True
-    cfg_data = db.get_guild_config(interaction.guild_id)
-    if not cfg_data or not cfg_data.get("admin_role_id"):
-        # No role configured — only owner can run admin commands
-        return False
-    role_id = cfg_data["admin_role_id"]
-    return any(r.id == role_id for r in interaction.user.roles)
-
-
 @bot.tree.command(name="setup", description="Konfiguroi botti tälle palvelimelle")
 @app_commands.describe(
     channel="Kanava, jossa tapahtumailmoitukset tehdään",
-    admin_role="Rooli, jolla on ylläpito-oikeudet",
 )
+@app_commands.default_permissions(manage_guild=True)
 async def cmd_setup(
     interaction: discord.Interaction,
     channel: discord.TextChannel,
-    admin_role: discord.Role,
 ):
-    if not _is_admin(interaction):
-        await interaction.response.send_message("❌ Ei oikeuksia.", ephemeral=True)
-        return
-
     db.upsert_guild_config(
         guild_id=interaction.guild_id,
         submission_channel_id=channel.id,
-        admin_role_id=admin_role.id,
     )
     await interaction.response.send_message(
         f"✅ Botti konfiguoitu!\n"
         f"• Kanava: {channel.mention}\n"
-        f"• Ylläpitorooli: {admin_role.mention}\n"
         f"Muista asettaa API-avain komennolla `/setapikey`.",
         ephemeral=True,
     )
@@ -141,19 +122,14 @@ class ApiKeyModal(discord.ui.Modal, title="Aseta API-avain"):
 
 
 @bot.tree.command(name="setapikey", description="Aseta Tapahtumat API-avain tälle palvelimelle")
+@app_commands.default_permissions(manage_guild=True)
 async def cmd_setapikey(interaction: discord.Interaction):
-    if not _is_admin(interaction):
-        await interaction.response.send_message("❌ Ei oikeuksia.", ephemeral=True)
-        return
     await interaction.response.send_modal(ApiKeyModal())
 
 
 @bot.tree.command(name="status", description="Näytä botin nykyinen konfiguraatio")
+@app_commands.default_permissions(manage_guild=True)
 async def cmd_status(interaction: discord.Interaction):
-    if not _is_admin(interaction):
-        await interaction.response.send_message("❌ Ei oikeuksia.", ephemeral=True)
-        return
-
     cfg_data = db.get_guild_config(interaction.guild_id)
     if not cfg_data:
         await interaction.response.send_message(
@@ -163,13 +139,11 @@ async def cmd_status(interaction: discord.Interaction):
         return
 
     channel = interaction.guild.get_channel(cfg_data["submission_channel_id"] or 0)
-    role    = interaction.guild.get_role(cfg_data["admin_role_id"] or 0)
     has_key = bool(cfg_data.get("api_key_encrypted"))
 
     await interaction.response.send_message(
         f"**Botin konfiguraatio:**\n"
         f"• Kanava: {channel.mention if channel else '(ei asetettu)'}\n"
-        f"• Ylläpitorooli: {role.mention if role else '(ei asetettu)'}\n"
         f"• Oletusjärjestäjä: {cfg_data.get('default_organiser') or '(ei asetettu)'}\n"
         f"• API-avain: {'✅ asetettu' if has_key else '❌ puuttuu'}",
         ephemeral=True,
@@ -182,15 +156,13 @@ async def cmd_status(interaction: discord.Interaction):
     term_type="municipality tai event_type",
     value="Lisättävä tai poistettava arvo",
 )
+@app_commands.default_permissions(manage_guild=True)
 async def cmd_taxonomy(
     interaction: discord.Interaction,
     action: str,
     term_type: str,
     value: str,
 ):
-    if not _is_admin(interaction):
-        await interaction.response.send_message("❌ Ei oikeuksia.", ephemeral=True)
-        return
     if action not in ("add", "remove"):
         await interaction.response.send_message("❌ Käytä `add` tai `remove`.", ephemeral=True)
         return
@@ -212,10 +184,8 @@ async def cmd_taxonomy(
 
 @bot.tree.command(name="listtaxonomy", description="Listaa tallennetut taksonomiarvot")
 @app_commands.describe(term_type="municipality tai event_type")
+@app_commands.default_permissions(manage_guild=True)
 async def cmd_listtaxonomy(interaction: discord.Interaction, term_type: str):
-    if not _is_admin(interaction):
-        await interaction.response.send_message("❌ Ei oikeuksia.", ephemeral=True)
-        return
     if term_type not in ("municipality", "event_type"):
         await interaction.response.send_message(
             "❌ Tyyppi pitää olla `municipality` tai `event_type`.\n"
@@ -242,7 +212,7 @@ async def cmd_help(interaction: discord.Interaction):
     await interaction.response.send_message(
         "**Tapahtumabot — komennot**\n\n"
         "**Ylläpito:**\n"
-        "• `/setup channel:#kanava role:@rooli` — Aseta ilmoituskanava ja ylläpitorooli\n"
+        "• `/setup channel:#kanava` — Aseta ilmoituskanava\n"
         "• `/setapikey` — Aseta Tapahtumat API-avain (yksityinen lomake)\n"
         "• `/status` — Näytä botin nykyinen konfiguraatio\n\n"
         "**Taksonomienhallinta:**\n"

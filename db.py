@@ -18,7 +18,6 @@ class GuildConfig(Base):
     __tablename__ = 'guild_config'
     guild_id = Column(BigInteger, primary_key=True)
     submission_channel_id = Column(BigInteger, nullable=True)
-    admin_role_id = Column(BigInteger, nullable=True)
     default_organiser = Column(String(255), default='')
     api_key_encrypted = Column(Text, default='')
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -181,7 +180,6 @@ def get_guild_config(guild_id: int) -> Optional[dict]:
         return {
             "guild_id": record.guild_id,
             "submission_channel_id": record.submission_channel_id,
-            "admin_role_id": record.admin_role_id,
             "default_organiser": record.default_organiser,
             "api_key_encrypted": record.api_key_encrypted,
         }
@@ -189,7 +187,6 @@ def get_guild_config(guild_id: int) -> Optional[dict]:
 def upsert_guild_config(
     guild_id: int,
     submission_channel_id: Optional[int] = None,
-    admin_role_id: Optional[int] = None,
     default_organiser: Optional[str] = None,
 ) -> None:
     with get_session() as session:
@@ -198,15 +195,12 @@ def upsert_guild_config(
             record = GuildConfig(
                 guild_id=guild_id,
                 submission_channel_id=submission_channel_id,
-                admin_role_id=admin_role_id,
                 default_organiser=default_organiser or ''
             )
             session.add(record)
         else:
             if submission_channel_id is not None:
                 record.submission_channel_id = submission_channel_id
-            if admin_role_id is not None:
-                record.admin_role_id = admin_role_id
             if default_organiser is not None:
                 record.default_organiser = default_organiser
 
