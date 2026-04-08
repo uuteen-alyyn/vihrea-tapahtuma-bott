@@ -31,11 +31,10 @@ FIELD_LABELS: dict[str, str] = {
     "event_type":     "Tyyppi",
     "remote":         "Etätapahtuma",
     "invite_link":    "Tapahtumalinkki",
-    "for_everyone":   "Kaikille avoin",
 }
 
 # Which fields are required for the API
-REQUIRED_FIELDS = {"title", "start_date", "start_time", "place_name", "municipality", "organiser"}
+REQUIRED_FIELDS = {"title", "start_date", "start_time", "organiser"}
 
 
 @dataclass
@@ -54,7 +53,7 @@ class EventData:
     event_type: str = ""
     remote: bool = False
     invite_link: str = ""      # optional link for remote events
-    for_everyone: bool = False
+    # for_everyone is always True — Vihreät events are public by design (hardcoded in build_payload)
 
     def missing_required(self) -> list[str]:
         """Return list of field names that are required but empty."""
@@ -92,12 +91,13 @@ def _to_iso8601(date: str, time: str) -> str:
 
 
 def build_payload(data: EventData) -> dict:
+    # NOTE: place_name, municipality, street_address are NOT valid fields for event creation.
+    # Location is associated via place_id only. Places are created separately via create_place().
     payload: dict = {
         "title":        data.title,
         "start":        _to_iso8601(data.start_date, data.start_time),
         "organiser_id": data.organiser_id,
-        "place_name":   data.place_name,
-        "municipality":  data.municipality,
+        "for_everyone": True,  # Vihreät events are always public — not asked from the user
     }
     if data.place_id is not None:
         payload["place_id"] = data.place_id
@@ -107,12 +107,8 @@ def build_payload(data: EventData) -> dict:
         payload["description"] = data.description
     if data.event_type:
         payload["event_type"] = data.event_type
-    if data.street_address:
-        payload["street_address"] = data.street_address
     if data.remote:
         payload["remote"] = True
-    # Always send for_everyone — API defaults to true, so we must explicitly send false
-    payload["for_everyone"] = data.for_everyone
     if data.invite_link:
         desc = payload.get("description", "")
         link_line = f"Tapahtumalinkki: {data.invite_link}"
@@ -201,6 +197,48 @@ async def search_places(api_base_url: str, api_key: str, query: str) -> list[dic
         raise
     except Exception as exc:
         log.warning("place search failed: %s", exc)
+        raise PlaceSearchError(str(exc)) from exc
+
+
+async def create_place(
+    api_base_url: str,
+    api_key: str,
+    name: str,
+    municipality_name: str,
+    street_address: str = "",
+) -> int:
+    """
+    Creates a new place via POST /api/v1/places.
+    Returns the new place's integer ID.
+    Raises PlaceSearchError on network errors, non-200 responses, or missing ID in response.
+    """
+    url = f"{api_base_url.rstrip('/')}/api/v1/places"
+    headers = {"api-key": api_key, "Content-Type": "application/json"}
+    body: dict = {"name": name, "municipality_name": municipality_name}
+    if street_address:
+        body["street_address"] = street_address
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=body, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    data = {}
+                if resp.status not in (200, 201):
+                    api_msg = data.get("message") or data.get("error", "")
+                    raise PlaceSearchError(f"HTTP {resp.status}: {api_msg}" if api_msg else f"HTTP {resp.status}")
+                created = data.get("created", data)
+                place_id = created.get("id") or created.get("nid") or data.get("place_id")
+                if not place_id:
+                    raise PlaceSearchError(f"API returned no place ID: {data}")
+                return int(place_id)
+    except PlaceSearchError:
+        raise
+    except Exception as exc:
+        log.warning("create_place failed: %s", exc)
         raise PlaceSearchError(str(exc)) from exc
 
 
