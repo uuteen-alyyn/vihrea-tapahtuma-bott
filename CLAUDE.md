@@ -48,7 +48,7 @@ See [PRD.md](PRD.md) for the full product spec.
 | `event_type` | string | Must match taxonomy term |
 | `street_address` | string | |
 | `remote` | boolean | |
-| `for_everyone` | boolean | |
+| `for_everyone` | boolean | Always sent as `true` — Vihreät events are always public. Not asked from users. |
 
 ### Validation notes
 - `organiser`, `event_type`, `municipality` must match existing taxonomy values — returns HTTP 400 with a message if not found.
@@ -56,7 +56,15 @@ See [PRD.md](PRD.md) for the full product spec.
 - Batch submissions supported via `"events": [...]` array wrapper.
 
 ### Taxonomy handling (municipality, event_type, organiser)
-**Best practice:** At bot startup, attempt to fetch valid taxonomy values from the API (check if a `/taxonomy` or `/terms` endpoint exists). If available, cache them in SQLite with a 24-hour TTL and present them to users as **Discord select menus / buttons** rather than free-text input — this makes invalid values impossible. If no taxonomy endpoint exists, hardcode the known values and provide an admin command `!update_taxonomy` to refresh the cached list manually. Never let users type taxonomy fields freehand without validation.
+The API has **no taxonomy endpoint** for municipalities or event types (confirmed from live API docs).
+The working set is hardcoded in `db.py` (`DEFAULT_MUNICIPALITIES`, `DEFAULT_EVENT_TYPES`) and seeded
+into SQLite on startup. Admins can extend or trim the list via `/taxonomy add` and `/taxonomy remove`.
+Organisers are fetched live from `GET /api/v1/organisers/search` — no local cache needed.
+
+**Place creation:** The API's `POST /api/v1/events` does NOT accept `place_name`, `municipality`,
+or `street_address` directly. Location is associated via `place_id` only. When a user enters a
+new venue manually, the bot first calls `POST /api/v1/places` (which requires `name` +
+`municipality_name`) to create the place, then uses the returned `place_id` in the event payload.
 
 ### Response
 - Success `200`: `{ "status": "ok", "created_event_ids": [...], "event_urls": [...] }`

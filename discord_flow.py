@@ -14,7 +14,7 @@ import db
 from event_pipeline import (
     EventData, FIELD_LABELS, REQUIRED_FIELDS, submit_event,
     search_organisers, OrganiserSearchError,
-    search_places, PlaceSearchError,
+    search_places, create_place, PlaceSearchError,
 )
 
 QUESTION_TIMEOUT     = 60   # seconds — user must type an answer
@@ -207,23 +207,34 @@ class OrganiserResultView(AuthorCheck, discord.ui.View):
 
 
 class PlaceSearchTriggerView(AuthorCheck, discord.ui.View):
-    """Search button + manual-entry button for place lookup."""
+    """Search button for place lookup. Manual-entry button only shown after first failed search."""
 
-    def __init__(self, author_id: int, modal: SearchModal):
+    def __init__(self, author_id: int, modal: SearchModal, show_manual: bool = False):
         super().__init__(timeout=BUTTON_TIMEOUT)
         self.author_id = author_id
         self._modal = modal
         self.clicked: bool = False
         self.manual: bool = False
 
-    @discord.ui.button(label="🔍 Hae paikka", style=discord.ButtonStyle.primary)
-    async def search_btn(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        search_btn = discord.ui.Button(label="🔍 Hae paikka", style=discord.ButtonStyle.primary)
+        search_btn.callback = self._search_cb
+        self.add_item(search_btn)
+
+        if show_manual:
+            manual_btn = discord.ui.Button(label="✏️ Syötä käsin", style=discord.ButtonStyle.secondary)
+            manual_btn.callback = self._manual_cb
+            self.add_item(manual_btn)
+
+    async def _search_cb(self, interaction: discord.Interaction):
+        if not await self.interaction_check(interaction):
+            return
         self.clicked = True
         await interaction.response.send_modal(self._modal)
         self.stop()
 
-    @discord.ui.button(label="✏️ Syötä käsin", style=discord.ButtonStyle.secondary)
-    async def manual_btn(self, interaction: discord.Interaction, _button: discord.ui.Button):
+    async def _manual_cb(self, interaction: discord.Interaction):
+        if not await self.interaction_check(interaction):
+            return
         self.manual = True
         await interaction.response.defer()
         self.stop()
@@ -447,10 +458,16 @@ class DiscordSubmissionFlow:
                 "🔗 **Tapahtuman linkki (Zoom, Meet tms.)?** — tai kirjoita `-` jos ei ole",
                 transform=lambda v: "" if v.strip() == "-" else v.strip(),
             )
-            self.data.place_name = await self._ask_text(
-                "📍 **Tapahtumapaikan nimi?** — esim. `Etätapahtuma` tai `Zoom`"
+            is_city_specific = await self._ask_yesno(
+                "🗺️ **Liittyykö tapahtuma tiettyyn kuntaan?**\n"
+                "Valitse *Kyllä* jos kyseessä on paikallisosaston etätapahtuma.\n"
+                "Valitse *Ei* kansallisille tapahtumille."
             )
-            # No street address for remote events
+            if is_city_specific:
+                self.data.municipality = await self._ask_search(
+                    "🗺️ **Mikä kunta?**", municipalities, "Hae kunta"
+                )
+                self.data.place_name = "Etätapahtuma"
         else:
             place_name, street_address, place_municipality, place_id = await self._ask_place_live(
                 "📍 **Mikä on tapahtumapaikka?**"
@@ -458,13 +475,8 @@ class DiscordSubmissionFlow:
             self.data.place_name = place_name
             self.data.street_address = street_address
             self.data.place_id = place_id
-            if place_municipality:
-                self.data.municipality = place_municipality
+            self.data.municipality = place_municipality
 
-        if not self.data.municipality:
-            self.data.municipality = await self._ask_search(
-                "🗺️ **Mikä kunta?**", municipalities, "Hae kunta"
-            )
         name, org_id = await self._ask_organiser_live("🏛️ **Järjestäjä?**")
         self.data.organiser = name
         self.data.organiser_id = org_id
@@ -478,7 +490,6 @@ class DiscordSubmissionFlow:
             transform=lambda v: "" if v.strip() == "-" else v.strip(),
             timeout=DESCRIPTION_TIMEOUT,
         )
-        self.data.for_everyone = await self._ask_yesno("🌍 **Onko tapahtuma kaikille avoin?**")
 
     # ------------------------------------------------------------------
     # Confirmation + correction loop
@@ -546,20 +557,34 @@ class DiscordSubmissionFlow:
         if field == "municipality":
             return await self._ask_search(f"🗺️ **{label}**", municipalities, "Hae kunta")
         if field == "place_name":
-            name, street, muni, place_id = await self._ask_place_live(f"📍 **{label}**")
-            if street:
+            if self.data.remote:
+                is_city_specific = await self._ask_yesno(
+                    "🗺️ **Liittyykö tapahtuma tiettyyn kuntaan?**\n"
+                    "Valitse *Kyllä* paikalliselle etätapahtumalle, *Ei* kansalliselle."
+                )
+                if is_city_specific:
+                    self.data.municipality = await self._ask_search(
+                        "🗺️ **Mikä kunta?**", municipalities, "Hae kunta"
+                    )
+                    self.data.place_id = None  # re-created at submit
+                    return "Etätapahtuma"
+                else:
+                    self.data.municipality = ""
+                    self.data.place_id = None
+                    return ""
+            else:
+                name, street, muni, place_id = await self._ask_place_live(f"📍 **{label}**")
                 self.data.street_address = street
-            if muni:
                 self.data.municipality = muni
-            self.data.place_id = place_id
-            return name
+                self.data.place_id = place_id
+                return name
         if field == "event_type":
             return await self._ask_select(f"Uusi arvo — **{label}**:", event_types, "Valitse tyyppi", required=False)
         if field == "organiser":
             name, org_id = await self._ask_organiser_live(f"🏛️ **{label}**")
             self.data.organiser_id = org_id
             return name
-        if field == "remote" or field == "for_everyone":
+        if field == "remote":
             return await self._ask_yesno(f"Uusi arvo — **{label}**:")
         if field == "invite_link":
             return await self._ask_text(
@@ -587,6 +612,26 @@ class DiscordSubmissionFlow:
                 "Pyydä ylläpitäjää asettamaan avain komennolla `/setapikey`."
             )
             return
+
+        # If a custom/new place was entered (no place_id yet), create it in the API first
+        if self.data.place_id is None and self.data.place_name:
+            await self.thread.send("⏳ Luodaan uusi tapahtumapaikka…")
+            try:
+                self.data.place_id = await create_place(
+                    self.api_base_url, api_key,
+                    name=self.data.place_name,
+                    municipality_name=self.data.municipality,
+                    street_address=self.data.street_address,
+                )
+                db.audit("discord", "place_created", self.guild_id, str(self.author.id),
+                         details={"place_name": self.data.place_name, "place_id": self.data.place_id},
+                         submission_id=self.sub_id)
+            except PlaceSearchError as exc:
+                await self.thread.send(
+                    f"❌ Tapahtumapaikan luominen epäonnistui: {exc}\n"
+                    "Tarkista tiedot ja yritä uudelleen tai ota yhteyttä ylläpitäjään."
+                )
+                return
 
         await self.thread.send("⏳ Lähetetään tapahtumaa kalenteriin…")
         db.audit("discord", "api_submitted", self.guild_id, str(self.author.id),
@@ -729,7 +774,7 @@ class DiscordSubmissionFlow:
                 next_query = None
             else:
                 modal = SearchModal(title="Hae tapahtumapaikka")
-                trigger = PlaceSearchTriggerView(self.author.id, modal)
+                trigger = PlaceSearchTriggerView(self.author.id, modal, show_manual=not first_attempt)
                 msg_text = prompt if first_attempt else "🔍 Yritä uudelleen:"
                 first_attempt = False
                 await self.thread.send(msg_text, view=trigger)
@@ -801,13 +846,18 @@ class DiscordSubmissionFlow:
             raise asyncio.TimeoutError()
 
     async def _ask_place_manual(self) -> tuple[str, str, str, None]:
-        """Ask place_name and street_address as free text. Returns (name, street, municipality='', None)."""
+        """Ask place_name, street_address, and municipality. Returns (name, street, municipality, None).
+        municipality is required here because it is needed when creating the place via the API."""
+        municipalities = db.get_taxonomy("municipality")
         place_name = await self._ask_text("📍 **Tapahtumapaikan nimi?**")
         street = await self._ask_text(
             "🏠 **Katuosoite?** — tai kirjoita `-` jos ei ole",
             transform=lambda v: "" if v.strip() == "-" else v.strip(),
         )
-        return place_name, street, "", None
+        municipality = await self._ask_search(
+            "🗺️ **Missä kunnassa paikka sijaitsee?**", municipalities, "Hae kunta"
+        )
+        return place_name, street, municipality, None
 
     async def _ask_text(
         self,
